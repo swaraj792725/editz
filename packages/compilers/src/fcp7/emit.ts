@@ -184,7 +184,11 @@ function sequenceNode(seq: Sequence, media: Map<string, MediaRef>, files: FileRe
       el("out", c.in + (c.end - c.start)),
       files.node(m),
     ];
-    if (kind === "audio") kids.push(el("sourcetrack", [el("mediatype", "audio"), el("trackindex", 1)]));
+    if (kind === "audio") {
+      kids.push(el("sourcetrack", [el("mediatype", "audio"), el("trackindex", 1)]));
+      const lv = levelsFilter(c);
+      if (lv) kids.push(lv);
+    }
     const links = linkMap.get(linkKey(c.media_id, c.start, c.end, c.in)) ?? [];
     if (links.length > 1 && links.some((l) => l.kind === "video") && links.some((l) => l.kind === "audio")) {
       for (const l of links) {
@@ -232,6 +236,40 @@ function sequenceNode(seq: Sequence, media: Map<string, MediaRef>, files: FileRe
     ],
     { id: `sequence-${slug(seq.name)}` },
   );
+}
+
+/** dB → the linear gain FCP7 XML stores (0 dB = 1, +12 dB ≈ 3.98, Premiere's max). */
+export function dbToGain(db: number): number {
+  return Math.round(Math.min(Math.pow(10, db / 20), 3.98109) * 1e6) / 1e6;
+}
+
+/**
+ * Audio Levels effect for clip gain and volume keyframes. Keyframe <when> is counted
+ * in frames from the clip item's start. [verify against a Premiere export when the
+ * in point is not 0; in = 0 is unambiguous]
+ */
+function levelsFilter(c: Sequence["audio"][number]["items"][number]): Node | null {
+  const gain = c.gain_db ?? 0;
+  const keys = [...(c.levels ?? [])].sort((a, b) => a.frame - b.frame);
+  if (!keys.length && gain === 0) return null;
+  const param: Node[] = [
+    el("parameterid", "level"),
+    el("name", "Level"),
+    el("valuemin", 0),
+    el("valuemax", 3.98109),
+    el("value", dbToGain((keys[0]?.db ?? 0) + gain)),
+    ...keys.map((k) => el("keyframe", [el("when", k.frame), el("value", dbToGain(k.db + gain))])),
+  ];
+  return el("filter", [
+    el("effect", [
+      el("name", "Audio Levels"),
+      el("effectid", "audiolevels"),
+      el("effectcategory", "audiolevels"),
+      el("effecttype", "audiolevels"),
+      el("mediatype", "audio"),
+      el("parameter", param, { authoringApp: "PremierePro" }),
+    ]),
+  ]);
 }
 
 function slug(s: string): string {

@@ -26,3 +26,19 @@ Built in vertical slices. Each slice ends with tests green and a tool Claude can
 - Checks: 64 tests (16 new, 5 run real FFmpeg on generated media), MCP stdio smoke via `pnpm smoke <tool> '<json>'`.
 - Scene detection decodes every frame (keyframe-only was off by up to half a second), at 320 px, VideoToolbox decode on Mac.
 - Not yet: captions, filler words (need transcripts, S2); media frame rate ≠ sequence rate in XML (S1 avoids it by building the sequence at the source's rate).
+
+## S2 decisions
+- Python worker `workers/editz-worker` (uv, JSON lines over stdio: `ping`, `transcribe`, `tts`, `voices`, `unload`). Started lazily by the daemon under `taskpolicy -b`, with `PYTHONPATH` + `cwd` set to the worker dir. Progress goes to the log and to MCP `notifications/progress` when the client sends a `progressToken`.
+- ASR: `mlx-whisper` `large-v3-turbo`, word timings, verbatim prompt so "um"/"uh" survive to be cut. TTS: `kokoro-onnx` (no torch; uv `override-dependencies`). Models in `<supportDir>/models` (`hf/`, `kokoro/`).
+- Transcripts cached in the Media Index per checksum + model + language + verbatim, and written as JSON under `<work>/.cache/transcripts`.
+- Every built timeline saves its IR beside the XML as `<name>.editz.json`; later tools (`create_captions`, `generate_voiceover`, `audio_mix`) take `ir_path`.
+- VO: one WAV per script paragraph, two-pass loudness (measure, exact gain, limiter only if needed) → −16 LUFS, ≤ −1.5 dBTP, 48 kHz mono. One-pass loudnorm missed by 2–4 LU on short takes.
+- VO track: track named "VO", else a VO-only track, else A2 if empty, else a new "VO" track. Overlap is an error, not a silent shift.
+- Ducking: piecewise-linear dB envelope per music clip (default −15 dB, 0.25 s attack, 0.5 s release, gaps < 1.2 s stay ducked), emitted as FCP7 "Audio Levels" keyframes. [verify] keyframe `<when>` units in Premiere import.
+- Captions: SRT/VTT written beside the XML (42 chars, 2 lines, 17 cps), QC'd; import into Premiere is a manual step for now (`nextStep`).
+
+## S2 status (done, pending Premiere check)
+- Tools: `transcribe`, `remove_filler`, `create_captions`, `list_voices`, `generate_voiceover`, `audio_mix`.
+- Code: `workers/editz-worker/`, `apps/daemon/src/worker.ts`, `src/speech/` (transcript, captions, service), `src/edit/{voiceover,mix}.ts`.
+- Checks: 25 new tests (fake-worker protocol, fillers, captions, ducking emit, VO placement); gated real-worker test `EDITZ_REAL_WORKER=1`. MCP smoke on a real talk: 4 filler cuts, QC pass, captions + VO on A2.
+- Not yet: CEP caption import; Audio Levels keyframes and captions checked inside Premiere; full 10-min talk run.

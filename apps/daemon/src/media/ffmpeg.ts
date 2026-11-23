@@ -78,6 +78,20 @@ async function ffmpeg(args: string[], opts?: RunOptions): Promise<RunResult> {
 
 const tail = (s: string, n = 400) => s.trim().slice(-n);
 
+/**
+ * Voice take → 48 kHz mono 16-bit WAV at speech loudness (−16 LUFS, peaks ≤ −1.5 dBTP).
+ * Two-pass: measure, then exact gain (+ limiter only if the gain would clip). One-pass
+ * loudnorm undershoots by 2–4 LU on takes of a few seconds.
+ */
+export async function normalizeVoice(input: string, output: string, opts?: RunOptions, targetLufs = -16): Promise<string> {
+  const l = await measureLoudness(input, opts);
+  const gain = Number.isFinite(l.integrated) ? Math.max(-20, Math.min(20, targetLufs - l.integrated)) : 0;
+  const chain = ["aresample=48000", `volume=${gain.toFixed(2)}dB`];
+  if (l.truePeak + gain > -1.5) chain.push("alimiter=limit=0.794:level=0:attack=1:release=50");
+  await ffmpeg(["-y", "-i", input, "-af", chain.join(","), "-ac", "1", "-c:a", "pcm_s16le", output], opts);
+  return output;
+}
+
 // ───────────────────────── probe ─────────────────────────
 
 export interface MediaInfo {

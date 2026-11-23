@@ -45,6 +45,8 @@ function semanticIssues(p: Project): IrIssue[] {
         if (m.kind !== "image" && c.in + (c.end - c.start) > m.duration) {
           issues.push({ path, message: `source out ${c.in + c.end - c.start} beyond media duration ${m.duration}` });
         }
+        if (c.levels?.some((k) => k.frame > c.end - c.start)) issues.push({ path, message: "volume keyframe past the clip end" });
+        if (kind === "video" && (c.levels || c.gain_db !== undefined)) issues.push({ path, message: "volume on a video item" });
         const prev = sorted[ci - 1];
         if (prev && prev.end > c.start) issues.push({ path, message: `overlaps ${prev.id}` });
       });

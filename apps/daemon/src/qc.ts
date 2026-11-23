@@ -1,11 +1,12 @@
 import { existsSync } from "node:fs";
 import { framesToSeconds, parseProject, sequenceDuration, type Project, type Rate, type Track } from "@editz/ir";
 import { measureLoudness, type Loudness, type RunOptions } from "./media/ffmpeg.ts";
+import { captionIssues, type CaptionOptions, type Cue } from "./speech/captions.ts";
 
 /** QC v0 (PRD §13.1): timeline checks on the IR + loudness on a rendered file. */
 
 export interface QcIssue {
-  check: "sequence" | "ir" | "offline" | "gap" | "format" | "duration" | "audio" | "loudness" | "true_peak";
+  check: "sequence" | "ir" | "offline" | "gap" | "format" | "duration" | "audio" | "loudness" | "true_peak" | "captions";
   message: string;
   /** Seconds on the timeline, when it points at a place. */
   at?: number;
@@ -111,4 +112,12 @@ export async function qcRender(path: string, target: QcTarget = QC_TARGETS.any!,
 export function mergeReports(...rs: QcReport[]): QcReport {
   const blocking = rs.flatMap((r) => r.blocking);
   return { pass: blocking.length === 0, blocking, warnings: rs.flatMap((r) => r.warnings), metrics: Object.assign({}, ...rs.map((r) => r.metrics)) };
+}
+
+/** Caption readability/sync as a QC report (line length, line count, overlap block; speed and flashes warn). */
+export function qcCaptions(cues: Cue[], o: CaptionOptions = {}): QcReport {
+  const issues = captionIssues(cues, o);
+  const toQc = (i: (typeof issues)[number]): QcIssue => ({ check: "captions", at: Math.round(i.at * 100) / 100, message: `caption ${i.cue}: ${i.message}` });
+  const blocking = issues.filter((i) => i.blocking).map(toQc);
+  return { pass: blocking.length === 0, blocking, warnings: issues.filter((i) => !i.blocking).map(toQc), metrics: {} };
 }

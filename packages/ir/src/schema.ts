@@ -44,6 +44,13 @@ export const MediaRef = z.object({
 });
 export type MediaRef = z.infer<typeof MediaRef>;
 
+/** One volume keyframe. frame is counted from the clip's start on the timeline. */
+export const LevelKey = z.object({
+  frame: z.number().int().nonnegative(),
+  db: z.number().min(-96).max(12),
+});
+export type LevelKey = z.infer<typeof LevelKey>;
+
 export const ClipItem = z
   .object({
     id: z.string().min(1),
@@ -55,6 +62,10 @@ export const ClipItem = z
     in: z.number().int().nonnegative(),
     enabled: z.boolean().default(true),
     name: z.string().optional(),
+    /** Audio clips: static gain in dB, added to any keyframes. */
+    gain_db: z.number().min(-96).max(12).optional(),
+    /** Audio clips: volume automation (ducking, fades). */
+    levels: z.array(LevelKey).optional(),
   })
   .refine((c) => c.end > c.start, { message: "clip end must be after start" });
 export type ClipItem = z.infer<typeof ClipItem>;
