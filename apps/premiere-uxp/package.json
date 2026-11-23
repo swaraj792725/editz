@@ -1,0 +1,6 @@
+{
+  "name": "@editz/premiere-uxp",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Editz UXP bridge for Premiere Pro 25.6+. Load with Adobe UXP Developer Tool (free)."
+}

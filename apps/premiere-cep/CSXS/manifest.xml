@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Editz bridge panel. CEP 8+ = Premiere Pro CC 2018 (12.0) and later. -->
+<ExtensionManifest Version="7.0" ExtensionBundleId="app.editz.bridge" ExtensionBundleVersion="0.0.1" ExtensionBundleName="Editz">
+  <ExtensionList>
+    <Extension Id="app.editz.bridge.panel" Version="0.0.1"/>
+  </ExtensionList>
+  <ExecutionEnvironment>
+    <HostList>
+      <Host Name="PPRO" Version="[12.0,99.9]"/>
+    </HostList>
+    <LocaleList>
+      <Locale Code="All"/>
+    </LocaleList>
+    <RequiredRuntimeList>
+      <RequiredRuntime Name="CSXS" Version="8.0"/>
+    </RequiredRuntimeList>
+  </ExecutionEnvironment>
+  <DispatchInfoList>
+    <Extension Id="app.editz.bridge.panel">
+      <DispatchInfo>
+        <Resources>
+          <MainPath>./index.html</MainPath>
+          <ScriptPath>./host/editz.jsx</ScriptPath>
+        </Resources>
+        <Lifecycle>
+          <AutoVisible>true</AutoVisible>
+          <StartOn>
+            <Event>com.adobe.csxs.events.ApplicationActivate</Event>
+          </StartOn>
+        </Lifecycle>
+        <UI>
+          <Type>Panel</Type>
+          <Menu>Editz</Menu>
+          <Geometry>
+            <Size><Height>220</Height><Width>320</Width></Size>
+            <MinSize><Height>120</Height><Width>200</Width></MinSize>
+          </Geometry>
+        </UI>
+      </DispatchInfo>
+    </Extension>
+  </DispatchInfoList>
+</ExtensionManifest>

@@ -1,0 +1,24 @@
+{
+  "name": "editz",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "packageManager": "pnpm@11.24.0",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "daemon": "tsx apps/daemon/src/index.ts",
+    "golden": "tsx scripts/build-golden.ts",
+    "lint:jsx": "tsx scripts/check-extendscript.ts"
+  },
+  "devDependencies": {
+    "@editz/compilers": "workspace:*",
+    "@editz/ir": "workspace:*",
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.5.0",
+    "acorn": "^8.19.0",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.0",
+    "vitest": "^4.0.0"
+  }
+}

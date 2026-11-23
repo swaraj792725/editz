@@ -1,0 +1,2 @@
+{ "name": "@editz/compilers", "version": "0.0.1", "type": "module", "exports": { ".": "./src/index.ts" },
+  "dependencies": { "@editz/ir": "workspace:*", "fast-xml-parser": "^5.0.0" } }

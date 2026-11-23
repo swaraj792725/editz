@@ -1,0 +1,10 @@
+{
+  "name": "@editz/premiere-cep",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@editz/ir": "workspace:*",
+    "@editz/compilers": "workspace:*"
+  }
+}
