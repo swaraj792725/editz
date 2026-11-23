@@ -9,7 +9,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "daemon": "tsx apps/daemon/src/index.ts",
     "golden": "tsx scripts/build-golden.ts",
-    "lint:jsx": "tsx scripts/check-extendscript.ts"
+    "lint:jsx": "tsx scripts/check-extendscript.ts",
+    "smoke": "tsx apps/daemon/scripts/smoke.ts"
   },
   "devDependencies": {
     "@editz/compilers": "workspace:*",

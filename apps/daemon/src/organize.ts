@@ -32,6 +32,8 @@ const AUDIO = new Set([".wav", ".mp3", ".aif", ".aiff", ".m4a", ".aac", ".flac",
 const STILL = new Set([".jpg", ".jpeg", ".png", ".tif", ".tiff", ".heic", ".webp", ".dng", ".cr2", ".cr3", ".nef", ".arw", ".bmp", ".gif"]);
 const GRAPHIC = new Set([".psd", ".ai", ".svg", ".eps", ".mogrt", ".aep", ".cube", ".look"]);
 const REF = new Set([".pdf", ".txt", ".md", ".docx", ".doc", ".rtf", ".srt", ".vtt", ".csv"]);
+/** Files FFmpeg can analyse (video, audio, stills). */
+export const MEDIA_EXTS = new Set([...VIDEO, ...AUDIO, ...STILL]);
 const SKIP = new Set([".prproj", ".prel", ".pek", ".cfa", ".ims", ".xmp", ".lrv", ".thm", ".ds_store", ".db", ".tmp", ".part"]);
 
 // Word-ish boundaries so "vo" doesn't match "volcano"; "_" and "-" count as separators.

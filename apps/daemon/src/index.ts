@@ -3,7 +3,7 @@
  * Editz daemon: MCP server on stdio for Claude + WebSocket bridge for Premiere panels.
  * stdout belongs to MCP. Log to stderr only.
  */
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -15,6 +15,11 @@ import { buildSequence } from "./build.ts";
 import { scanFolder } from "./organize.ts";
 import { ensureToken, supportDir, workDir } from "./paths.ts";
 import { probe } from "./probe.ts";
+import { keepRanges, silenceCutProject } from "./edit/silence-cut.ts";
+import { analyze, collectMedia, ingest, summarize } from "./media/analyze.ts";
+import { contactSheet } from "./media/ffmpeg.ts";
+import { MediaIndex } from "./media/index-db.ts";
+import { mergeReports, qcProject, qcRender, QC_TARGETS } from "./qc.ts";
 
 const log = (m: string) => process.stderr.write(`[editz] ${m}\n`);
 const text = (v: unknown) => ({ content: [{ type: "text" as const, text: typeof v === "string" ? v : JSON.stringify(v, null, 2) }] });
@@ -153,11 +158,176 @@ server.registerTool(
   },
 );
 
+// ───────────────────────── M1 S1: media foundation ─────────────────────────
+
+let mediaIndex: MediaIndex | undefined;
+const index = () => (mediaIndex ??= new MediaIndex());
+
+server.registerTool(
+  "ingest_media",
+  {
+    title: "Ingest media",
+    description:
+      "Read every media file in the given folders/files once (duration, size, frame rate, audio) and remember it by content, so later analysis is instant. Files are never changed.",
+    inputSchema: {
+      paths: z.array(z.string()).min(1).describe("Absolute file or folder paths"),
+      max_files: z.number().int().positive().max(20000).default(2000),
+    },
+  },
+  async ({ paths, max_files }) => {
+    try {
+      const files = collectMedia(paths, max_files);
+      const out = [];
+      const errors: { path: string; error: string }[] = [];
+      for (const f of files) {
+        try {
+          const m = await ingest(index(), f);
+          out.push(summarize({ checksum: m.checksum, path: f, info: m.info, cached: [] }));
+        } catch (e) {
+          errors.push({ path: f, error: (e as Error).message });
+        }
+      }
+      return text({ files: out.length, media: out, errors, index: index().stats() });
+    } catch (e) {
+      return fail((e as Error).message);
+    }
+  },
+);
+
+server.registerTool(
+  "analyze_media",
+  {
+    title: "Analyse media",
+    description:
+      "Measure silence (dead air), loudness (LUFS / true peak) and shot cuts for media files. Runs in the background at low priority and caches by content, so repeat calls are free. Returns compact summaries; set detail=true for raw ranges.",
+    inputSchema: {
+      paths: z.array(z.string()).min(1),
+      kinds: z.array(z.enum(["silence", "loudness", "scenes"])).default(["silence", "loudness", "scenes"]),
+      silence_db: z.number().max(0).default(-35).describe("Silence threshold, dBFS"),
+      min_silence_s: z.number().positive().default(0.5),
+      scene_threshold: z.number().min(0.05).max(0.9).default(0.35),
+      detail: z.boolean().default(false),
+    },
+  },
+  async ({ paths, kinds, silence_db, min_silence_s, scene_threshold, detail }) => {
+    try {
+      const files = collectMedia(paths);
+      const results = [];
+      for (const f of files) {
+        const a = await analyze(index(), f, kinds, { thresholdDb: silence_db, minSilenceSec: min_silence_s, sceneThreshold: scene_threshold });
+        results.push(detail ? { ...summarize(a), silence: a.silence, scenes: a.scenes, loudness: a.loudness, cached: a.cached } : { ...summarize(a), cached: a.cached });
+      }
+      return text({ files: results.length, results });
+    } catch (e) {
+      return fail((e as Error).message);
+    }
+  },
+);
+
+server.registerTool(
+  "contact_sheet",
+  {
+    title: "Contact sheet",
+    description: "A small grid of frames from a video (up to 24) so Claude can see it cheaply. Evenly spaced, or at given times.",
+    inputSchema: {
+      path: z.string(),
+      count: z.number().int().min(1).max(24).default(12),
+      times: z.array(z.number().min(0)).max(24).optional().describe("Seconds; overrides count"),
+      cols: z.number().int().min(1).max(8).default(4),
+    },
+  },
+  async ({ path, count, times, cols }) => {
+    try {
+      const m = await ingest(index(), path);
+      if (!m.info.hasVideo) return fail("No picture in this file.");
+      const dir = join(workDir(), ".cache", "sheets");
+      mkdirSync(dir, { recursive: true });
+      const out = join(dir, `${m.checksum}-${times ? times.join("_").slice(0, 60) : count}-${cols}.jpg`);
+      const sheet = await contactSheet(path, m.info.durationSec, out, { count, times, cols, tileWidth: 320 });
+      return {
+        content: [
+          { type: "image" as const, data: readFileSync(sheet.path).toString("base64"), mimeType: "image/jpeg" },
+          { type: "text" as const, text: JSON.stringify({ path: sheet.path, times_s: sheet.times, grid: `${sheet.cols}x${sheet.rows}`, order: "left→right, top→bottom" }) },
+        ],
+      };
+    } catch (e) {
+      return fail((e as Error).message);
+    }
+  },
+);
+
+server.registerTool(
+  "remove_silence",
+  {
+    title: "Remove dead air",
+    description:
+      "Cut the silent parts out of a talk, interview or podcast recording and build the tight version as a new sequence (any Premiere version). Keeps a little breathing room around speech. Use preview=true to see the numbers without building.",
+    inputSchema: {
+      path: z.string().describe("Source recording"),
+      silence_db: z.number().max(0).default(-35),
+      min_silence_s: z.number().positive().default(0.6),
+      pad_s: z.number().min(0).max(1).default(0.15),
+      min_keep_s: z.number().min(0).default(0.4),
+      merge_gap_s: z.number().min(0).default(0.3),
+      sequence: z.string().optional(),
+      preview: z.boolean().default(false),
+      out_dir: z.string().optional(),
+    },
+  },
+  async (a) => {
+    try {
+      const r = await analyze(index(), a.path, ["silence"], { thresholdDb: a.silence_db, minSilenceSec: a.min_silence_s });
+      if (!r.info.hasAudio) return fail("This file has no audio, so there is no silence to find.");
+      const keep = keepRanges(r.silence ?? [], r.info.durationSec, { padSec: a.pad_s, minKeepSec: a.min_keep_s, mergeGapSec: a.merge_gap_s });
+      if (!keep.length) return fail("Everything is below the silence threshold. Try a lower silence_db (e.g. -45).");
+      const { project: input, stats } = silenceCutProject(r.info, keep, a.sequence);
+      if (a.preview) return text({ preview: true, stats, keep_ranges_s: keep.slice(0, 50) });
+      const project = parseProject(input).project!;
+      const qc = qcProject(project);
+      const outDir = a.out_dir ?? join(workDir(), project.name, "timelines");
+      const built = await buildSequence(project, { bridge, outDir });
+      return text({ stats, qc, build: built });
+    } catch (e) {
+      return fail((e as Error).message);
+    }
+  },
+);
+
+server.registerTool(
+  "run_qc",
+  {
+    title: "Quality check",
+    description:
+      "Check a timeline (IR) for gaps, offline media, wrong size/length for the platform, and a rendered file for loudness and clipping. Returns blocking problems in plain words.",
+    inputSchema: {
+      ir: z.any().optional(),
+      ir_path: z.string().optional(),
+      sequence: z.string().optional(),
+      render_path: z.string().optional().describe("Rendered video/audio file to measure"),
+      target: z.enum(["any", "youtube", "reels", "shorts", "podcast", "broadcast"]).default("any"),
+    },
+  },
+  async ({ ir, ir_path, sequence, render_path, target }) => {
+    try {
+      const t = QC_TARGETS[target]!;
+      const reports = [];
+      const input = ir ?? (ir_path ? JSON.parse(readFileSync(ir_path, "utf8")) : undefined);
+      if (input) reports.push(qcProject(input, sequence, t));
+      if (render_path) reports.push(await qcRender(render_path, t));
+      if (!reports.length) return fail("Pass ir / ir_path and/or render_path.");
+      return text(mergeReports(...reports));
+    } catch (e) {
+      return fail((e as Error).message);
+    }
+  },
+);
+
 await server.connect(new StdioServerTransport());
 log("MCP server ready on stdio");
 
 const shutdown = async () => {
   await bridge.stop().catch(() => {});
+  mediaIndex?.close();
   process.exit(0);
 };
 process.on("SIGINT", shutdown);
