@@ -192,7 +192,11 @@ export function findUv(): string {
 }
 
 export function workerProjectDir(): string {
-  return process.env.EDITZ_WORKER_DIR ?? fileURLToPath(new URL("../../../workers/editz-worker", import.meta.url));
+  if (process.env.EDITZ_WORKER_DIR) return process.env.EDITZ_WORKER_DIR;
+  // Installed copies ship one bundled editz.mjs with the worker beside it; dev checkouts use the repo.
+  const beside = fileURLToPath(new URL("./worker", import.meta.url));
+  if (existsSync(join(beside, "pyproject.toml"))) return beside;
+  return fileURLToPath(new URL("../../../workers/editz-worker", import.meta.url));
 }
 
 export function modelsDir(): string {
