@@ -37,6 +37,8 @@ export function findTool(name: "ffmpeg" | "ffprobe"): string {
 export interface RunResult {
   code: number;
   stdout: string;
+  /** Same bytes as stdout, unconverted (raw video frames). */
+  raw: Buffer;
   stderr: string;
 }
 
@@ -65,7 +67,8 @@ export function run(bin: string, args: string[], opts: RunOptions = {}): Promise
     });
     child.on("close", (code) => {
       clearTimeout(timer);
-      resolve({ code: code ?? -1, stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8") });
+      const raw = Buffer.concat(out);
+      resolve({ code: code ?? -1, stdout: raw.toString("utf8"), raw, stderr: Buffer.concat(err).toString("utf8") });
     });
   });
 }
@@ -316,4 +319,65 @@ function layout(n: number, cols: number, w: number): string {
     const y = r === 0 ? "0" : Array.from({ length: r }, () => "h0").join("+");
     return `${x}_${y}`;
   }).join("|");
+}
+
+// ───────────────────────── frames for models ─────────────────────────
+
+/**
+ * One JPEG per time, squashed to size×size (what SigLIP's own preprocessor does).
+ * One FFmpeg run: an input seek per frame, one output per frame.
+ */
+export async function extractFrames(path: string, times: number[], outPaths: string[], size = 224, isImage = false, opts?: RunOptions): Promise<string[]> {
+  if (times.length !== outPaths.length) throw new Error("extractFrames: one output per time");
+  if (!times.length) return [];
+  const vf = `scale=${size}:${size}:flags=bilinear,setsar=1`;
+  const inputs = isImage ? ["-i", path] : times.flatMap((t) => ["-ss", String(t), "-i", path]);
+  const outputs = outPaths.flatMap((o, i) => ["-map", `${isImage ? 0 : i}:v:0`, "-frames:v", "1", "-vf", vf, "-q:v", "3", "-y", o]);
+  await ffmpeg([...inputs, ...outputs], opts);
+  return outPaths;
+}
+
+export interface RawFrames {
+  width: number;
+  height: number;
+  fps: number;
+  /** rgb24, width*height*3 bytes each. */
+  frames: Buffer[];
+}
+
+/** Tiny RGB frames at a steady rate, for colour and motion stats (64×36 by default). */
+export async function rawFrames(path: string, o: { fps?: number; width?: number; height?: number; isImage?: boolean } = {}, opts?: RunOptions): Promise<RawFrames> {
+  const width = o.width ?? 64;
+  const height = o.height ?? 36;
+  const fps = o.fps ?? 2;
+  const vf = `${o.isImage ? "" : `fps=${fps},`}scale=${width}:${height}:flags=area,format=rgb24`;
+  const r = await ffmpeg(["-i", path, "-an", "-sn", "-dn", "-vf", vf, ...(o.isImage ? ["-frames:v", "1"] : []), "-f", "rawvideo", "-"], opts);
+  const n = width * height * 3;
+  const frames: Buffer[] = [];
+  for (let i = 0; i + n <= r.raw.length; i += n) frames.push(r.raw.subarray(i, i + n));
+  return { width, height, fps, frames };
+}
+
+// ───────────────────────── proxies ─────────────────────────
+
+export interface ProxyOptions {
+  /** Proxy height, px (width keeps the aspect). Default 540. */
+  height?: number;
+  /** Keep the source's audio channel count: Premiere refuses to attach a proxy whose channels differ. */
+  audioChannels?: number;
+}
+
+/**
+ * Edit-friendly proxy: H.264 (Mac media engine when present), same frame rate and audio channels, AAC.
+ * Premiere's attach-proxy rule: same aspect ratio, frame rate, duration and channel count.
+ */
+export async function makeProxy(input: string, output: string, o: ProxyOptions = {}, opts?: RunOptions): Promise<string> {
+  const h = o.height ?? 540;
+  const audio = o.audioChannels ? ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "128k", "-ac", String(o.audioChannels)] : [];
+  const common = ["-y", "-i", input, "-map", "0:v:0", "-vf", `scale=-2:${h}`, "-fps_mode", "passthrough", ...audio, "-map_metadata", "0", "-movflags", "+faststart"];
+  const hw = ["-c:v", "h264_videotoolbox", "-b:v", "3M", "-allow_sw", "1"];
+  const sw = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p"];
+  if (process.platform === "darwin") await ffmpeg([...common, ...hw, output], opts).catch(() => ffmpeg([...common, ...sw, output], opts));
+  else await ffmpeg([...common, ...sw, output], opts);
+  return output;
 }

@@ -49,6 +49,10 @@ export class MediaIndex {
       CREATE TABLE IF NOT EXISTS analysis (
         checksum TEXT NOT NULL, kind TEXT NOT NULL, result TEXT NOT NULL, updated TEXT NOT NULL,
         PRIMARY KEY (checksum, kind));
+      CREATE TABLE IF NOT EXISTS frame_vectors (
+        checksum TEXT NOT NULL, model TEXT NOT NULL, t REAL NOT NULL, vec BLOB NOT NULL,
+        PRIMARY KEY (checksum, model, t));
+      CREATE TABLE IF NOT EXISTS text_vectors (model TEXT NOT NULL, text TEXT NOT NULL, vec BLOB NOT NULL, PRIMARY KEY (model, text));
     `);
   }
 
@@ -93,8 +97,67 @@ export class MediaIndex {
       .run(checksum, kind, JSON.stringify(result), new Date().toISOString());
   }
 
+  /** Every analysis whose kind starts with a prefix, e.g. "look/v1". */
+  analysesLike<T>(kindPrefix: string): { checksum: string; kind: string; result: T }[] {
+    const rows = this.db.prepare("SELECT checksum, kind, result FROM analysis WHERE substr(kind, 1, ?) = ?").all(kindPrefix.length, kindPrefix) as { checksum: string; kind: string; result: string }[];
+    return rows.map((r) => ({ checksum: r.checksum, kind: r.kind, result: JSON.parse(r.result) as T }));
+  }
+
+  /** Known paths for a checksum (copies of the same file share one), newest first. */
+  pathsFor(checksum: string): string[] {
+    return (this.db.prepare("SELECT path FROM paths WHERE checksum = ? ORDER BY mtime_ms DESC").all(checksum) as { path: string }[]).map((r) => r.path);
+  }
+
+  /** Replace a file's frame embeddings for one model. */
+  putFrameVectors(checksum: string, model: string, frames: { t: number; vec: Float32Array }[]) {
+    this.db.exec("BEGIN");
+    try {
+      this.db.prepare("DELETE FROM frame_vectors WHERE checksum = ? AND model = ?").run(checksum, model);
+      const ins = this.db.prepare("INSERT INTO frame_vectors (checksum, model, t, vec) VALUES (?, ?, ?, ?)");
+      for (const f of frames) ins.run(checksum, model, f.t, new Uint8Array(f.vec.buffer, f.vec.byteOffset, f.vec.byteLength));
+      this.db.exec("COMMIT");
+    } catch (e) {
+      this.db.exec("ROLLBACK");
+      throw e;
+    }
+  }
+
+  /** Frame embeddings by checksum (all files, or one). */
+  frameVectors(model: string, checksum?: string): Map<string, { t: number; vec: Float32Array }[]> {
+    const rows = (
+      checksum
+        ? this.db.prepare("SELECT checksum, t, vec FROM frame_vectors WHERE model = ? AND checksum = ? ORDER BY t").all(model, checksum)
+        : this.db.prepare("SELECT checksum, t, vec FROM frame_vectors WHERE model = ? ORDER BY checksum, t").all(model)
+    ) as { checksum: string; t: number; vec: Uint8Array }[];
+    const out = new Map<string, { t: number; vec: Float32Array }[]>();
+    for (const r of rows) {
+      const list = out.get(r.checksum) ?? [];
+      list.push({ t: r.t, vec: toF32(r.vec) });
+      out.set(r.checksum, list);
+    }
+    return out;
+  }
+
+  textVector(model: string, text: string): Float32Array | undefined {
+    const row = this.db.prepare("SELECT vec FROM text_vectors WHERE model = ? AND text = ?").get(model, text) as { vec: Uint8Array } | undefined;
+    return row ? toF32(row.vec) : undefined;
+  }
+
+  putTextVector(model: string, text: string, vec: Float32Array) {
+    this.db
+      .prepare("INSERT INTO text_vectors (model, text, vec) VALUES (?, ?, ?) ON CONFLICT(model, text) DO UPDATE SET vec = excluded.vec")
+      .run(model, text, new Uint8Array(vec.buffer, vec.byteOffset, vec.byteLength));
+  }
+
   stats() {
     const n = (sql: string) => (this.db.prepare(sql).get() as { n: number }).n;
     return { files: n("SELECT count(*) n FROM paths"), media: n("SELECT count(*) n FROM media"), analyses: n("SELECT count(*) n FROM analysis") };
   }
+}
+
+/** BLOB → Float32Array (copied, so alignment is always right). */
+function toF32(b: Uint8Array): Float32Array {
+  const copy = new Uint8Array(b.byteLength);
+  copy.set(b);
+  return new Float32Array(copy.buffer);
 }

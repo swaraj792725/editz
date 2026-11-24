@@ -1,10 +1,11 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { extname, join } from "node:path";
 import { MEDIA_EXTS } from "../organize.ts";
-import { detectScenes, detectSilence, measureLoudness, probe, type Loudness, type MediaInfo, type Range, type RunOptions, type SilenceOptions } from "./ffmpeg.ts";
+import { detectScenes, detectSilence, measureLoudness, probe, rawFrames, type Loudness, type MediaInfo, type Range, type RunOptions, type SilenceOptions } from "./ffmpeg.ts";
 import type { IndexedMedia, MediaIndex } from "./index-db.ts";
+import { lookProfile, type LookProfile } from "./look.ts";
 
-export type AnalysisKind = "silence" | "loudness" | "scenes";
+export type AnalysisKind = "silence" | "loudness" | "scenes" | "look";
 
 export interface Analysis {
   checksum: string;
@@ -17,6 +18,8 @@ export interface Analysis {
   loudness?: Loudness;
   /** Shot cut times, seconds. */
   scenes?: number[];
+  /** Colour, brightness, motion, pace. */
+  look?: LookProfile;
   /** Which results came from the cache (analyse once). */
   cached: AnalysisKind[];
 }
@@ -68,6 +71,13 @@ export async function analyze(index: MediaIndex, path: string, kinds: AnalysisKi
     const th = o.sceneThreshold ?? 0.35;
     out.scenes = await cachedOr("scenes", `scenes/v1/${th}`, () => detectScenes(path, th, o.run));
   }
+  if (kinds.includes("look") && m.info.hasVideo) {
+    const img = !!m.info.isImage;
+    // ≤ ~600 frames whatever the length: 2 fps up to 5 min, sparser after.
+    const fps = img ? 1 : m.info.durationSec <= 300 ? 2 : Math.max(0.25, Math.round((600 / m.info.durationSec) * 100) / 100);
+    const scenes = img ? undefined : (out.scenes ?? index.getAnalysis<number[]>(m.checksum, `scenes/v1/${o.sceneThreshold ?? 0.35}`));
+    out.look = await cachedOr("look", `look/v1/${fps}`, async () => lookProfile(await rawFrames(path, { fps, isImage: img }, o.run), scenes, img ? undefined : m.info.durationSec));
+  }
   return out;
 }
 
@@ -98,6 +108,8 @@ export function summarize(a: Analysis) {
     true_peak_db: a.loudness ? round1(a.loudness.truePeak) : undefined,
     silent_pct: a.silentRatio !== undefined ? Math.round(a.silentRatio * 100) : undefined,
     shots: a.scenes ? a.scenes.length + 1 : undefined,
+    look: a.look ? a.look.labels.join(", ") || "neutral" : undefined,
+    palette: a.look ? a.look.palette.map((c) => c.hex) : undefined,
   };
 }
 const round1 = (n: number) => (Number.isFinite(n) ? Math.round(n * 10) / 10 : n);

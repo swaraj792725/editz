@@ -1,12 +1,14 @@
 [project]
 name = "editz-worker"
 version = "0.1.0"
-description = "Editz local AI worker: speech to text (Whisper via MLX) and voice-over (Kokoro). JSON lines over stdio."
+description = "Editz local AI worker: speech to text (Whisper via MLX), voice-over (Kokoro), vision tags and search (SigLIP 2). JSON lines over stdio."
 requires-python = ">=3.10,<3.14"
 dependencies = [
   "mlx-whisper>=0.4.2; sys_platform == 'darwin' and platform_machine == 'arm64'",
   "kokoro-onnx>=0.4.9",
   "numpy",
+  "tokenizers>=0.20",
+  "pillow>=10",
 ]
 
 [build-system]

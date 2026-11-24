@@ -52,6 +52,18 @@ def _voices(params, progress):
     return {"voices": tts.voices(progress=progress)}
 
 
+def _embed_images(params, progress):
+    from . import vision
+
+    return vision.embed_images(progress=progress, **params)
+
+
+def _embed_texts(params, progress):
+    from . import vision
+
+    return vision.embed_texts(progress=progress, **params)
+
+
 def _unload(params, progress):
     freed = []
     if "editz_worker.asr" in sys.modules:
@@ -60,10 +72,21 @@ def _unload(params, progress):
     if "editz_worker.tts" in sys.modules:
         if sys.modules["editz_worker.tts"].unload():
             freed.append("kokoro")
+    if "editz_worker.vision" in sys.modules:
+        if sys.modules["editz_worker.vision"].unload():
+            freed.append("siglip")
     return {"freed": freed}
 
 
-METHODS = {"ping": _ping, "transcribe": _transcribe, "tts": _tts, "voices": _voices, "unload": _unload}
+METHODS = {
+    "ping": _ping,
+    "transcribe": _transcribe,
+    "tts": _tts,
+    "voices": _voices,
+    "embed_images": _embed_images,
+    "embed_texts": _embed_texts,
+    "unload": _unload,
+}
 
 
 def main() -> None:

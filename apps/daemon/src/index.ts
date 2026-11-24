@@ -19,6 +19,8 @@ import { keepRanges, silenceCutProject } from "./edit/silence-cut.ts";
 import { analyze, collectMedia, ingest, summarize } from "./media/analyze.ts";
 import { contactSheet } from "./media/ffmpeg.ts";
 import { MediaIndex } from "./media/index-db.ts";
+import { makeProxies } from "./media/proxy.ts";
+import { describeVisual, searchMedia, visualAnalyze, type VisualResult } from "./media/visual.ts";
 import { mergeReports, qcCaptions, qcProject, qcRender, QC_TARGETS } from "./qc.ts";
 import { PyWorker, defaultWorkerCommand } from "./worker.ts";
 import { describeVoices, fillerCutPlan, loadIr, saveIr, speakScript, stemOf, transcribeFile, writeCaptions } from "./speech/service.ts";
@@ -205,10 +207,10 @@ server.registerTool(
   {
     title: "Analyse media",
     description:
-      "Measure silence (dead air), loudness (LUFS / true peak) and shot cuts for media files. Runs in the background at low priority and caches by content, so repeat calls are free. Returns compact summaries; set detail=true for raw ranges.",
+      "Measure silence (dead air), loudness (LUFS / true peak), shot cuts and look (brightness, colour palette, warmth, motion) for media files. Runs in the background at low priority and caches by content, so repeat calls are free. Returns compact summaries; set detail=true for raw ranges.",
     inputSchema: {
       paths: z.array(z.string()).min(1),
-      kinds: z.array(z.enum(["silence", "loudness", "scenes"])).default(["silence", "loudness", "scenes"]),
+      kinds: z.array(z.enum(["silence", "loudness", "scenes", "look"])).default(["silence", "loudness", "scenes"]),
       silence_db: z.number().max(0).default(-35).describe("Silence threshold, dBFS"),
       min_silence_s: z.number().positive().default(0.5),
       scene_threshold: z.number().min(0.05).max(0.9).default(0.35),
@@ -596,6 +598,160 @@ server.registerTool(
       const outDir = a.ir_path ? dirname(a.ir_path) : join(workDir(), out.name, "timelines");
       const built = await buildSequence(out, { bridge, outDir, sequence: seq.name });
       return text({ ducked_clips: r.ducked, tracks: targets.map((t) => `A${t + 1}`), build: built, ir_path: saveIr(out, built.xmlPath) });
+    } catch (e) {
+      return fail((e as Error).message);
+    }
+  },
+);
+
+// ───────────────────────── M1 S3: eyes (tags, mood, search) + proxies ─────────────────────────
+
+const visualSummary = async (r: VisualResult) => {
+  const d = r.frames ? await describeVisual(index(), py(), r.checksum) : undefined;
+  return {
+    path: r.path,
+    kind: r.info.isImage ? "image" : r.info.hasVideo ? "video" : "audio",
+    duration_s: Math.round(r.info.durationSec * 100) / 100,
+    frames_looked_at: r.frames,
+    ...(r.skipped ? { skipped: r.skipped } : {}),
+    tags: d?.tags.map((t) => t.tag),
+    moods: d?.moods.map((m) => (m.fit === 1 ? m.mood : `${m.mood} ${Math.round(m.fit * 100)}%`)),
+    look: r.look?.labels.join(", ") || (r.look ? "neutral" : undefined),
+    palette: r.look?.palette.map((p) => p.hex),
+    cached: r.cached,
+  };
+};
+
+server.registerTool(
+  "tag_media",
+  {
+    title: "Tag media",
+    description:
+      "Look at footage and stills on this Mac (SigLIP 2; nothing is uploaded): what is in each shot, the mood, and the look (brightness, warmth, palette, motion). Cached by content. First use downloads the vision model (~650 MB). Needed once before search_media; search_media also does it for its 'in' folders.",
+    inputSchema: {
+      paths: z.array(z.string()).min(1).describe("Absolute files or folders"),
+      every_s: z.number().min(0.5).max(30).default(2).describe("Look at a frame about this often (plus one per shot)"),
+      max_frames: z.number().int().min(1).max(120).default(24),
+      force: z.boolean().default(false),
+      max_files: z.number().int().positive().max(5000).default(500),
+    },
+  },
+  async (a, extra) => {
+    try {
+      const files = collectMedia(a.paths, a.max_files);
+      const out = [];
+      const errors: { path: string; error: string }[] = [];
+      const progress = progressFor(extra, "tag");
+      for (const [i, f] of files.entries()) {
+        try {
+          progress(`${i + 1}/${files.length} ${f.split("/").pop()}`, i / files.length);
+          const r = await visualAnalyze(index(), py(), f, { every: a.every_s, maxFrames: a.max_frames, force: a.force, onProgress: progress });
+          out.push(await visualSummary(r));
+        } catch (e) {
+          errors.push({ path: f, error: (e as Error).message });
+        }
+      }
+      return text({ files: out.length, media: out, errors });
+    } catch (e) {
+      return fail((e as Error).message);
+    }
+  },
+);
+
+server.registerTool(
+  "search_media",
+  {
+    title: "Search media",
+    description:
+      "Find shots by what is in them, how they feel and how they look, across tagged footage and stills. Examples: query 'barista pouring latte art', mood 'cozy', look 'warm' or '#1e3a5f', like '/path/to/hero.mov'. Combine any. Returns the best files with the best moment (at_s) and a frame preview path. Untagged files under 'in' are tagged first.",
+    inputSchema: {
+      query: z.string().optional().describe("What should be in the shot, plain words"),
+      mood: z.string().optional().describe("A feeling: cozy, calm, energetic, tense, romantic, moody…"),
+      look: z.string().optional().describe("Look words (warm, cool, dark, bright, vivid, muted, black and white) or a colour name / #hex"),
+      like: z.string().optional().describe("Path of a clip or still to find similar shots to"),
+      in: z.array(z.string()).optional().describe("Only these files/folders (tagged now if needed). Omit to search everything tagged."),
+      kind: z.enum(["video", "image", "any"]).default("any"),
+      min_duration_s: z.number().min(0).optional(),
+      limit: z.number().int().min(1).max(100).default(10),
+    },
+  },
+  async (a, extra) => {
+    try {
+      let within: Set<string> | undefined;
+      const tagged: string[] = [];
+      if (a.in?.length) {
+        within = new Set();
+        const progress = progressFor(extra, "search");
+        const files = collectMedia(a.in, 2000);
+        for (const [i, f] of files.entries()) {
+          try {
+            const r = await visualAnalyze(index(), py(), f, { onProgress: progress });
+            if (!r.cached && r.frames) tagged.push(f);
+            if (r.frames) within.add(r.checksum);
+            if (!r.cached) progress(`tagged ${i + 1}/${files.length}`, (i + 1) / files.length);
+          } catch (e) {
+            log(`search: skip ${f}: ${(e as Error).message}`);
+          }
+        }
+      }
+      const r = await searchMedia(index(), py(), {
+        query: a.query,
+        mood: a.mood,
+        look: a.look,
+        like: a.like,
+        within,
+        kind: a.kind,
+        minDurationSec: a.min_duration_s,
+        limit: a.limit,
+      });
+      if (!r.searched) return text({ hits: [], note: "Nothing tagged yet. Run tag_media on the footage folder, or pass in: [folder]." });
+      return text({ searched: r.searched, newly_tagged: tagged.length, hits: r.hits });
+    } catch (e) {
+      return fail((e as Error).message);
+    }
+  },
+);
+
+server.registerTool(
+  "make_proxies",
+  {
+    title: "Make proxies",
+    description:
+      "Make light 540p H.264 edit copies of heavy footage (4K, phone HEVC, RAW-ish) so Premiere plays smoothly, and attach them in the open project when the Premiere panel is connected (CEP). Toggle Proxies in Premiere's Program monitor to switch. Exports still use the full-quality originals.",
+    inputSchema: {
+      paths: z.array(z.string()).min(1).describe("Absolute files or folders"),
+      out_dir: z.string().optional().describe("Where proxies go; default a 'Proxies' folder beside each clip"),
+      height: z.number().int().min(240).max(1080).default(540),
+      attach: z.boolean().default(true).describe("Attach to the matching clips in the open Premiere project"),
+      force: z.boolean().default(false),
+    },
+  },
+  async (a, extra) => {
+    try {
+      const files = collectMedia(a.paths);
+      const results = await makeProxies(index(), files, { outDir: a.out_dir, height: a.height, force: a.force, onProgress: progressFor(extra, "proxy") });
+      const pairs = results.filter((r) => r.proxy).map((r) => ({ media: r.media, proxy: r.proxy! }));
+      let attached: unknown;
+      let next_step: string | undefined;
+      if (a.attach && pairs.length) {
+        const host = bridge.connected;
+        if (host?.backend === "cep") {
+          attached = (await bridge.request<{ results: unknown[] }>("attachProxies", { pairs }, 300_000)).results;
+        } else {
+          next_step = host
+            ? "This Premiere panel (UXP) cannot attach proxies yet. In Premiere: select the clips → right-click → Proxy → Attach Proxies… → pick the Proxies folder."
+            : "Premiere panel not connected. Import the clips, then select them → right-click → Proxy → Attach Proxies… → pick the Proxies folder.";
+        }
+      }
+      return text({
+        made: results.filter((r) => r.made).length,
+        reused: results.filter((r) => !r.made && r.proxy).length,
+        skipped: results.filter((r) => r.skipped && !r.proxy).map((r) => ({ path: r.media, why: r.skipped })),
+        errors: results.filter((r) => r.error).map((r) => ({ path: r.media, error: r.error })),
+        proxies: pairs,
+        ...(attached ? { attached } : {}),
+        ...(next_step ? { next_step } : {}),
+      });
     } catch (e) {
       return fail((e as Error).message);
     }

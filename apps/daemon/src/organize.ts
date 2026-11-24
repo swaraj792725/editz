@@ -27,7 +27,7 @@ export interface Classified {
   reason: string;
 }
 
-const VIDEO = new Set([".mp4", ".mov", ".mxf", ".m4v", ".avi", ".mkv", ".mts", ".m2ts", ".r3d", ".braw", ".webm", ".mpg", ".mpeg"]);
+const VIDEO = new Set([".mp4", ".mov", ".mxf", ".m4v", ".avi", ".mkv", ".mts", ".m2ts", ".r3d", ".braw", ".webm", ".ogv", ".mpg", ".mpeg"]);
 const AUDIO = new Set([".wav", ".mp3", ".aif", ".aiff", ".m4a", ".aac", ".flac", ".ogg", ".bwf"]);
 const STILL = new Set([".jpg", ".jpeg", ".png", ".tif", ".tiff", ".heic", ".webp", ".dng", ".cr2", ".cr3", ".nef", ".arw", ".bmp", ".gif"]);
 const GRAPHIC = new Set([".psd", ".ai", ".svg", ".eps", ".mogrt", ".aep", ".cube", ".look"]);

@@ -42,3 +42,28 @@ Built in vertical slices. Each slice ends with tests green and a tool Claude can
 - Code: `workers/editz-worker/`, `apps/daemon/src/worker.ts`, `src/speech/` (transcript, captions, service), `src/edit/{voiceover,mix}.ts`.
 - Checks: 25 new tests (fake-worker protocol, fillers, captions, ducking emit, VO placement); gated real-worker test `EDITZ_REAL_WORKER=1`. MCP smoke on a real talk: 4 filler cuts, QC pass, captions + VO on A2.
 - Not yet: CEP caption import; Audio Levels keyframes and captions checked inside Premiere; full 10-min talk run.
+
+## S3 decisions
+- Vision: SigLIP 2 base/224 (Apache-2.0) through ONNX Runtime, no torch. Vision fp32 (372 MB), text int8 (283 MB, cos ≥ 0.995 vs fp16). Worker methods `embed_images`, `embed_texts`; vectors are L2-normalised float32, base64.
+- Frames: one per shot (S1 scene cuts) plus one every 2 s, capped at 24 per clip; 224² JPEGs in `<supportDir>/cache/frames/<checksum>/`. Embeddings in the Media Index (`frame_vectors`, BLOBs), text embeddings cached (`text_vectors`). Search is brute-force cosine in JS: fine to ~100k frames; sqlite-vec deferred.
+- Scores: SigLIP's calibrated sigmoid (`exp(4.7245)·cos − 16.77`) is too strict for generic labels ("a bird" on an owl = 1%), so ranking and tags use a fixed cosine ramp (0.04 → 0, 0.16 → 1). Tags keep fit ≥ 0.5, max 8. The calibrated value is still returned as `confidence`.
+- Mood: 16 moods, each the mean of two prompt wordings; softmax (T = 100) across moods per frame, averaged over frames; fit = share / the clip's top share. Any word works as a search mood (added to the set for that query).
+- Look: pure TS on 64×36 raw RGB at 2 fps: brightness, contrast, saturation, warmth, 5-colour Lab k-means palette, in-shot motion, cuts/min → plain words. `look` search takes words or a colour name / hex.
+- `search_media` weights: content 0.5, mood 0.25, look 0.15, like 0.1, renormalised over what was asked. Returns the best moment (`at_s`) and its frame.
+- Proxies: H.264 (VideoToolbox, libx264 fallback), short side 540, same fps and audio channel count, `_Proxy.mp4` in a `Proxies` folder beside the clip. CEP op `attachProxies` matches project items by media path and reads back `hasProxy()`; UXP and no-panel get a manual `next_step`.
+
+## S3 status (done; Premiere proxy attach not yet tried in a real Premiere)
+- Tools: `tag_media`, `search_media`, `make_proxies`; `analyze_media` gains kind `look`.
+- Code: `workers/editz-worker/editz_worker/vision.py`, `src/media/{visual,look,proxy}.ts`, Media Index vector tables, CEP `attachProxies`.
+- Checks: 13 new tests (frame sampling, Lab/k-means/look fit, scoring, fake-model search by content/mood/look/likeness, proxy encode, mock-Premiere attach). Real-model smoke on stills + a clip: 6 files tagged in 7 s (model warm), owl→bird, sunflower→flowers, sensible mood/look ranking.
+- Done-when check passed on 10 CC0/public-domain Wikimedia Commons clips: 5 café clips (latte art ×2, Rateel café ×2, milk heating) and 5 contrast clips (storm, fireworks, snowy forest, child playing, coffee-shop lesson). 10 files tagged in 9 s with the model warm.
+  - mood "cozy" → the 3 café clips come first (latte flower 0.86, Rateel café 0.76, latte leaf 0.61). "dramatic" → storm, fireworks, snow. "playful" → child.
+  - query "coffee" / "latte art" / "a café" → café clips first. "a café" + "cozy" → café clips first.
+  - Tags: latte art 1.0, barista 0.82, café 0.59.
+- Fixes from the check: added `.ogv` to the video types (the latte clips had been skipped); added café tags (latte art, barista making coffee, espresso machine).
+- Known weak spots:
+  - Mood fit is relative to each clip's own top mood, so several clips can tie at 1.0 (e.g. "warm", "dramatic").
+  - "calm" scores low everywhere (best 0.24).
+  - The milk-heating clip gets no tags.
+  - The tag list is small (no "owl", no "guitar").
+- Not yet: `attachProxy` inside a real Premiere.

@@ -196,6 +196,46 @@ var EditzHost = (function () {
     return { moved: moved, missing: missing };
   };
 
+  // Attach proxies by full-res media path. a.pairs: [{media, proxy}]. Premiere needs same
+  // aspect, frame rate, duration and audio channels; it checks, we read back hasProxy().
+  ops.attachProxies = function (a) {
+    var byPath = {};
+    walk(project().rootItem, function (it) {
+      var p = mediaPathOf(it);
+      if (p) {
+        var k = String(p).toLowerCase();
+        if (!byPath[k]) byPath[k] = [];
+        byPath[k].push(it);
+      }
+    });
+    var out = [];
+    for (var i = 0; i < a.pairs.length; i++) {
+      var pr = a.pairs[i];
+      var items = byPath[String(pr.media).toLowerCase()] || [];
+      if (!items.length) {
+        out.push({ media: pr.media, attached: 0, error: "not in project" });
+        continue;
+      }
+      var n = 0, err = null;
+      for (var j = 0; j < items.length; j++) {
+        var it = items[j];
+        try {
+          if (typeof it.canProxy === "function" && !it.canProxy()) {
+            err = "Premiere says this clip cannot take a proxy";
+            continue;
+          }
+          it.attachProxy(pr.proxy, 0);
+          if (typeof it.hasProxy !== "function" || it.hasProxy()) n++;
+          else err = "Premiere did not keep the proxy (format mismatch?)";
+        } catch (e) {
+          err = String(e && e.message ? e.message : e);
+        }
+      }
+      out.push(err && !n ? { media: pr.media, attached: n, error: err } : { media: pr.media, attached: n });
+    }
+    return { results: out };
+  };
+
   ops.deleteBins = function (a) {
     var deleted = 0;
     for (var i = 0; i < a.nodeIds.length; i++) {

@@ -35,6 +35,7 @@ export type Op =
   | { op: "importXml"; args: { path: string } }
   | { op: "moveItems"; args: { moves: { nodeId: string; bin: string }[] } }
   | { op: "deleteBins"; args: { nodeIds: string[] } }
+  | { op: "attachProxies"; args: { pairs: { media: string; proxy: string }[] } }
   | { op: "listSequences"; args: Record<string, never> }
   | { op: "readSequence"; args: { name: string } }
   | { op: "addMarkers"; args: { sequence: string; markers: { seconds: number; name: string; comment: string; durationSeconds: number }[] } }

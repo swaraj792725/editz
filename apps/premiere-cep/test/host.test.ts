@@ -146,6 +146,35 @@ describe("ExtendScript host lib (mock Premiere)", () => {
     expect(() => call("rm -rf")).toThrow(/Unknown op/);
   });
 
+  it("attaches proxies by media path, case-insensitive, and reports misses", () => {
+    const p = assertProject(twentyClipProject());
+    const { call, root } = mockPremiere(p);
+    call("importXml", { path: "/tmp/golden.xml" });
+    const clips: any[] = [];
+    const walk = (it: Item) => it.kids.forEach((k) => (k.getMediaPath() ? clips.push(k) : walk(k)));
+    walk(root);
+    let attached = 0;
+    for (const c of clips) {
+      c.proxy = null;
+      c.canProxy = () => !String(c.getMediaPath()).includes("broll_06");
+      c.attachProxy = (path: string, isHiRes: number) => ((c.proxy = path), attached++, expect(isHiRes).toBe(0));
+      c.hasProxy = () => !!c.proxy;
+    }
+    const media = clips[0].getMediaPath() as string;
+    const b6 = clips.find((c) => c.getMediaPath().includes("broll_06")).getMediaPath();
+    const r = call<{ results: { media: string; attached: number; error?: string }[] }>("attachProxies", {
+      pairs: [
+        { media: media.toUpperCase(), proxy: "/px/a_Proxy.mp4" },
+        { media: "/nope.mov", proxy: "/px/n.mp4" },
+        { media: b6, proxy: "/px/b6.mp4" },
+      ],
+    });
+    expect(r.results[0]).toEqual({ media: media.toUpperCase(), attached: 1 });
+    expect(r.results[1]!.error).toMatch(/not in project/);
+    expect(r.results[2]!.error).toMatch(/cannot take a proxy/);
+    expect(attached).toBe(1);
+  });
+
   it("stringify handles quotes, control chars, unicode", () => {
     const ctx = vm.createContext({ app: {} });
     vm.runInContext(HOST + "\nthis.EditzHost = EditzHost;", ctx);
