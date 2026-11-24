@@ -57,9 +57,14 @@ Editz saves what it makes in **Movies → Editz**.
 - **Claude doesn't know about Editz.** Quit Claude with Cmd + Q (closing the window is not enough), then open it again.
 - **There's no Editz entry in Premiere's Extensions menu.** Quit Premiere and open it again. If it's still missing, Claude can still build your timeline as a file you import with **File → Import**.
 
-### Update
+### Updates
 
-Run the install line again. It keeps your settings and models and swaps in the new version.
+Editz checks for a new version every 30 minutes. When one is out, a small window pops up with what changed and two buttons: **Update now** or **Later**.
+
+- **Update now** installs it in the background, then offers to restart Claude. If Premiere is open, restart it once your project is saved.
+- **Later** asks again in a few hours.
+
+You can also update any time by running the install line again.
 
 ### Uninstall
 
@@ -83,7 +88,9 @@ Everything goes in `~/Library/Application Support/Editz`. Nothing is installed s
 | Editz | This project | This repo's Releases page |
 | AI models (Whisper, Kokoro, SigLIP 2) | Speech-to-text, voiceover, shot search | Hugging Face |
 
-The installer also changes three settings:
+The installer also changes four settings:
+
+- It adds a background update check: `~/Library/LaunchAgents/app.editz.updater.plist`.
 
 - It adds an `editz` entry to Claude's `claude_desktop_config.json`. A backup of the original is saved next to it as `.before-editz`.
 - It copies the Premiere panel to `~/Library/Application Support/Adobe/CEP/extensions`.
@@ -112,4 +119,6 @@ pnpm test
 pnpm release:build
 ```
 
-`pnpm release:build` writes `dist/editz-mac.tar.gz` and its `.sha256`. Attach both to a GitHub release: the installer downloads `releases/latest/download/editz-mac.tar.gz`. To test the installer without touching your real setup, point `EDITZ_HOME`, `EDITZ_CEP_DIR` and `EDITZ_CLAUDE_CONFIG` at scratch paths. See the top of `install.sh`.
+**Releases are automatic.** Every push to `main` that passes the typecheck and tests becomes release `v<major>.<minor>.<run number>` (see `.github/workflows/release.yml`). Pushes that only change docs or `*.md` files are skipped. Testers' Macs pick it up within 30 minutes: the installer adds a LaunchAgent, `app.editz.updater`, which runs `app/updater.mjs`. It asks before updating, reruns that release's `install.sh`, and logs to `~/Library/Application Support/Editz/logs`. To ship a bigger step, bump `major.minor` in `package.json`.
+
+`pnpm release:build` builds the same bundle locally: `dist/editz-mac.tar.gz` plus its `.sha256`. To test the installer without touching your real setup, point `EDITZ_HOME`, `EDITZ_CEP_DIR` and `EDITZ_CLAUDE_CONFIG` at scratch paths. See the top of `install.sh`.

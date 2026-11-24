@@ -16,14 +16,20 @@ import { build } from "esbuild";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const dist = join(root, "dist");
 const out = join(dist, "editz");
-const version = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version as string;
+// CI sets EDITZ_VERSION (major.minor from package.json + run number) so every release is newer.
+const version = process.env.EDITZ_VERSION || (JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version as string);
 
 rmSync(dist, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
 
 // ws and other CJS deps call require() for Node built-ins; give the ESM bundle a real one.
 const banner = `import { createRequire as __editzRequire } from "node:module"; const require = __editzRequire(import.meta.url);`;
-for (const [entry, file] of [["apps/daemon/src/index.ts", "editz.mjs"], ["apps/daemon/src/warmup.ts", "warmup.mjs"]] as const) {
+const entries = [
+  ["apps/daemon/src/index.ts", "editz.mjs"],
+  ["apps/daemon/src/warmup.ts", "warmup.mjs"],
+  ["apps/daemon/src/updater.ts", "updater.mjs"],
+] as const;
+for (const [entry, file] of entries) {
   await build({
     entryPoints: [join(root, entry)],
     outfile: join(out, file),

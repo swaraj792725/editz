@@ -1,0 +1,62 @@
+# Every push to main that passes the checks becomes a release (v<major>.<minor>.<run number>).
+# Testers' Macs see it within 30 minutes and ask "Update now / Later".
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["docs/**", "**/*.md"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: FFmpeg for the media tests
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: bash -n install.sh
+
+      - name: Version
+        id: v
+        run: |
+          base=$(node -p "require('./package.json').version.split('.').slice(0,2).join('.')")
+          echo "version=$base.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build bundle
+        run: pnpm release:build
+        env:
+          EDITZ_VERSION: ${{ steps.v.outputs.version }}
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          prev=$(git describe --tags --abbrev=0 2>/dev/null || true)
+          if [ -n "$prev" ]; then range="$prev..HEAD"; else range="HEAD"; fi
+          git log --no-merges --format='- %s' "$range" > notes.md
+          [ -s notes.md ] || echo "- Rebuild" > notes.md
+          gh release create "v$V" dist/editz-mac.tar.gz dist/editz-mac.tar.gz.sha256 \
+            --target "$GITHUB_SHA" --title "Editz $V" --notes-file notes.md

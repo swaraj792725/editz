@@ -22,6 +22,9 @@ EZ="${EDITZ_HOME:-$HOME/Library/Application Support/Editz}"
 CEP_DIR="${EDITZ_CEP_DIR:-$HOME/Library/Application Support/Adobe/CEP/extensions}"
 CLAUDE_CFG="${EDITZ_CLAUDE_CONFIG:-$HOME/Library/Application Support/Claude/claude_desktop_config.json}"
 BUNDLE_URL="${EDITZ_BUNDLE_URL:-https://github.com/$REPO/releases/latest/download/editz-mac.tar.gz}"
+LA_DIR="${EDITZ_LAUNCH_AGENTS:-$HOME/Library/LaunchAgents}"
+LABEL="app.editz.updater"
+PLIST="$LA_DIR/$LABEL.plist"
 APP="$EZ/app"
 BIN="$EZ/bin"
 NODE_HOME="$EZ/node"
@@ -62,12 +65,51 @@ fs.writeFileSync(cfg, JSON.stringify(d, null, 2) + "\n");
 JS
 }
 
+# Background update check: every 30 minutes and at login, run app/updater.mjs (asks before updating).
+install_updater() {
+  mkdir -p "$LA_DIR" "$EZ/logs"
+  local env_xml=""
+  [ -n "${EDITZ_HOME:-}" ] && env_xml="<key>EnvironmentVariables</key><dict><key>EDITZ_HOME</key><string>$EZ</string></dict>"
+  cat > "$PLIST.tmp" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$LABEL</string>
+  <key>ProgramArguments</key>
+  <array><string>$NODE</string><string>$APP/updater.mjs</string></array>
+  <key>StartInterval</key><integer>1800</integer>
+  <key>RunAtLoad</key><true/>
+  <key>ProcessType</key><string>Background</string>
+  <key>StandardOutPath</key><string>$EZ/logs/updater.log</string>
+  <key>StandardErrorPath</key><string>$EZ/logs/updater.log</string>
+  $env_xml
+</dict>
+</plist>
+EOF
+  mv "$PLIST.tmp" "$PLIST"
+  [ -n "${EDITZ_SKIP_LAUNCHD:-}" ] && return 0
+  local job; job="gui/$(id -u)/$LABEL"
+  if launchctl print "$job" >/dev/null 2>&1; then
+    # An update is run by this very job; reloading it now would stop the update half way.
+    [ -n "${EDITZ_UPDATING:-}" ] && return 0
+    launchctl bootout "$job" 2>/dev/null || true
+  fi
+  launchctl bootstrap "gui/$(id -u)" "$PLIST"
+}
+
+remove_updater() {
+  [ -z "${EDITZ_SKIP_LAUNCHD:-}" ] && launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+  rm -f "$PLIST"
+}
+
 # Everything runs inside main() so `curl | bash` reads the whole script before any step
 # starts (otherwise a step reading stdin could swallow the rest of the script).
 main() {
 # ───────────────────────── uninstall ─────────────────────────
 if [ "${1:-}" = "--uninstall" ]; then
   step "Removing Editz"
+  if [ -f "$PLIST" ]; then remove_updater; ok "Turned off update checks"; fi
   if [ -x "$NODE" ] && [ -f "$CLAUDE_CFG" ]; then editz_config remove && ok "Removed Editz from Claude's settings"; fi
   if [ -L "$CEP_DIR/app.editz.bridge" ] || [ -d "$CEP_DIR/app.editz.bridge" ]; then rm -rf "$CEP_DIR/app.editz.bridge"; ok "Removed the Premiere panel"; fi
   if [ -d "$EZ" ]; then rm -rf "$EZ"; ok "Removed $EZ (app, AI models, media index)"; fi
@@ -152,6 +194,8 @@ ok "Editz added to Claude (a backup of the old settings is beside it: claude_des
 step "7/7 Setting up the local AI (the slow part)"
 if [ -n "${EDITZ_SKIP_MODELS:-}" ]; then "$NODE" "$APP/warmup.mjs" --skip-models || die "the local AI helper did not start."
 else "$NODE" "$APP/warmup.mjs" || die "the local AI helper did not start. Run the installer again — it picks up where it stopped."; fi
+install_updater || die "could not set up update checks."
+ok "Editz checks for updates every 30 minutes and asks before installing one"
 
 printf '\n%s%sEditz is installed.%s\n\n' "$green" "$bold" "$off"
 cat <<EOF
@@ -162,7 +206,7 @@ Next:
   4. In Claude, start a chat and ask: "Check Editz status".
      Then try: "Organise my footage in /path/to/folder into bins".
 
-To update later, run the same install line again. To remove Editz:
+Updates: Editz asks with a pop-up when a new version is out. To remove Editz:
   curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | bash -s -- --uninstall
 EOF
 }
